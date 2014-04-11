@@ -1,7 +1,6 @@
 module Rudimentary where
 import Botworld
 import Control.Monad.Reader (runReader)
-import Data.Maybe (catMaybes)
 
 -- Simple programs
 -- Below is a function that allows us to create robots that execute a hardcoded

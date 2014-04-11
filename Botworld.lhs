@@ -105,7 +105,6 @@ import Control.Applicative ((<$>), (<*>))
 import Control.Monad (join)
 import Control.Monad.Reader (Reader, asks)
 import Data.List (delete, elemIndices, intercalate, sortBy)
-import Data.List.Split (chunksOf)
 import Data.Maybe (catMaybes, isJust, fromMaybe, mapMaybe)
 import Data.Ord (comparing)
 import Text.Printf (printf)
@@ -1277,6 +1276,9 @@ Items are crudely shown as follows:
       [f, s] -> printf " %s %s " (clr f) (clr s)
       (f:s:_) -> printf " %s %s\x2026" (clr f) (clr s)
       where clr = show . color . frame
+
+    chunksOf _ [] = []
+    chunksOf r xs = (take r xs) : (chunksOf r $ drop r xs)
 \end{code}
 
 Finally, the scoreboard function takes a game configuration and prints out a scoreboard detailing the scores of each player (broken down according to the robots in the player's home square at the end of the game).
