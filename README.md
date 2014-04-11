@@ -7,3 +7,5 @@ An extensive introduction to Botworld can be found in the
 [Botworld technical report](http://intelligence.org/files/Botworld.pdf).
 The source code for Botworld can be found in the corresponding
 [literate Haskell file](Botworld.lhs).
+
+Some examples may be found in the [examples](examples/) directory.
