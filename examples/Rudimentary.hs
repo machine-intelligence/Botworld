@@ -1,4 +1,4 @@
-module Example where
+module Rudimentary where
 import Botworld
 import Control.Monad.Reader (runReader)
 import Data.Maybe (catMaybes)
