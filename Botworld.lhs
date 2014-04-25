@@ -1019,9 +1019,10 @@ instance Encodable Int where
 
 instance Decodable Int where
   decode (Cons (Cons Nil (Cons Nil Nil)) n) = negate <$> decode n
-  decode t = unbits <$> decode t where
-    unbits [] = 0
-    unbits (x:xs) = (if x then 1 else 0) + 2 * unbits xs
+  decode t = decode t >>= unbits where
+    unbits [] = Just 0
+    unbits [False] = Nothing
+    unbits (x:xs) = (\y -> (if x then 1 else 0) + 2 * y) <$> unbits xs
 
 instance Encodable Instruction where
   encode instruction = case instruction of
