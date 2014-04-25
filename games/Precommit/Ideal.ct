@@ -1,0 +1,51 @@
+; This agent gets the maximum rewards in the Precommit game.
+; (It even does so while attacking Omega, just for the hell of it.)
+
+;; GENERIC REGISTERS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+PRG 1024:	CONDEXEC	OUT	PREP	; As soon as time starts, 'PREP' will be executed
+		EXEC		LPREP		; Only useful for symmetry (the program will be reset with LPREP)
+
+INP:						; All input is ignored
+
+OUT 64:		Move E				; Initial action: move east
+
+;; VERIFIED REGISTERS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+NIL:		Nil				; Always Nil. (Omega verifies that this is Nil.)
+COM:		Inspect 1			; Precommitted action. (Omega verifies that this.)
+
+LPRECOM:	CONDEXEC	OUT	PRECOM	; Run 'PRECOM' if a new turn has begun.
+		EXEC		LPRECOM		; Run the 'PRECOM' loader.
+PRECOM:		WRITE		COM		; Pass. (This is the precommitted action verified by Omega.)
+		EXEC		LTAKE		; Run the 'TAKE' loader.
+
+LTAKE:		CONDEXEC	OUT	TAKE	; Run 'TAKE' if a new turn has begun.
+		EXEC		LTAKE		; Run the 'TAKE' loader.
+
+;; REMAINING MODES ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+TAKE:		WRITE		LIFT		; Lift the box.
+		EXEC		LRETURN		; Run the 'RETURN' loader.
+
+LRETURN:	CONDEXEC	OUT	RETURN	; Run 'RETURN' if a new turn has begun.
+		EXEC		LRETURN		; Run the 'RETURN' loader.
+RETURN:		WRITE		WEST		; Move west.
+		EXEC		LRESET		; Run the 'RESET' loader.
+
+LRESET:		CONDEXEC	OUT	RESET	; Run 'RESET' if a new turn has begun.
+		EXEC		LRESET		; Run the 'RESET' loader.
+RESET:		WRITE		EAST		; Move east.
+		EXEC		LPREP		; Run the 'PREP' loader.
+
+LPREP:		CONDEXEC	OUT	PREP	; Run 'PREP' if a new turn has begun.
+		EXEC		LPREP		; Run the 'PREP' loader.
+PREP:		WRITE		ATTACK		; Smack Omega.
+		EXEC		LPRECOM		; Run the 'PRECOM' loader.
+
+;; OTHER CONSTANTS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+EAST:		Move E				; Move east
+ATTACK:		Destroy 0			; Attack Omega
+LIFT:           Lift 0                          ; Lift Omega's box
+WEST:		Move W				; Move west

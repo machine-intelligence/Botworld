@@ -1,0 +1,33 @@
+; This agent gets the maximum rewards in the Precommit game.
+; (It even does so while attacking Omega, just for the hell of it.)
+
+;; GENERIC REGISTERS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+PRG 1024:	CONDEXEC	OUT	PREP	; As soon as time starts, 'PREP' will be executed
+		EXEC		LPREP		; Only useful for symmetry (the program will be reset with LPREP)
+
+INP:						; All input is ignored
+
+OUT 64:		Move E				; Initial action: move east
+
+;; VERIFIED REGISTERS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+NIL:		Nil				; Always Nil. (Omega verifies that this is Nil.)
+COM:		Destroy 1			; Precommitted action. (Omega verifies that this.)
+
+LPRECOM:	CONDEXEC	OUT	PRECOM	; Run 'PRECOM' if a new turn has begun.
+		EXEC		LPRECOM		; Run the 'PRECOM' loader.
+PRECOM:		WRITE		COM		; Pass. (This is the precommitted action verified by Omega.)
+		EXEC		LNIL		; Wait for death.
+
+LNIL:		CONDEXEC	OUT	NIL	; We'll be dead at this point.
+		EXEC		LNIL		; Run the 'NIL' loader.
+
+;; REMAINING MODES ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+LPREP:		CONDEXEC	OUT	PREP	; Run 'PREP' if a new turn has begun.
+		EXEC		LPREP		; Run the 'PREP' loader.
+PREP:		WRITE		ATTACK		; Smack Omega.
+		EXEC		LPRECOM		; Run the 'PRECOM' loader.
+
+ATTACK:		Destroy 0			; Attack Omega

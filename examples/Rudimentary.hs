@@ -1,6 +1,8 @@
 module Rudimentary where
 import Botworld
+import Botworld.Display
 import Control.Monad.Reader (runReader)
+import Data.Map (Map, fromList)
 
 -- Simple programs
 -- Below is a function that allows us to create robots that execute a hardcoded
@@ -30,7 +32,7 @@ reg i = let t = encode i in R (size t) t
 hardcode :: [Command] -> Memory
 hardcode [] = []
 hardcode commands = registers where
-  registers = program : input : output : nil : spinner : queuer : queue : []
+  registers = [program, input, output, nil, spinner, queuer, queue]
   psize = max (size $ contents queuer) (size $ contents spinner)
   program = R psize (contents spinner)
   spinner = reg [CopyIfNil rOUT rCTR rPRG, CopyIfNil rNIL rSPN rPRG]
@@ -55,15 +57,15 @@ unsafeRun n m = let Right m' = runFor n m in m'
 -- the hardcode function above. Otherwise, it crashes.
 unsafeContents :: Memory -> String
 unsafeContents (p:i:o:n:s:c:q:[]) = result where
-  result = unlines $
-    ( ("PRG: " ++ show prg)
-	: ("INP: " ++ show inp)
-	: ("OUT: " ++ out)
-	: ("NIL: " ++ show nil)
-	: ("SPN: " ++ show spn)
-	: ("CTR: " ++ show ctr)
-	: ("QUE: " ++ show que)
-	: [])
+  result = unlines
+    [ "PRG: " ++ show prg
+	, "INP: " ++ show inp
+	, "OUT: " ++ out
+	, "NIL: " ++ show nil
+	, "SPN: " ++ show spn
+	, "CTR: " ++ show ctr
+	, "QUE: " ++ show que
+	]
   Just prg = decode (contents p) :: Maybe [Instruction]
   inp = contents i
   out = maybe (show $ contents o) show (decode (contents o) :: Maybe Command)
@@ -83,10 +85,6 @@ unsafeCheck = putStr . unsafeContents
 addRobot :: Robot -> Maybe Square -> Maybe Square
 addRobot r = fmap (\(Square rs is) -> Square (r:rs) is)
 
--- Lets you see the state of a world.
-see :: GameConfig -> Botworld -> String
-see = flip $ runReader . visualize
-
 
 -- Example game:
 
@@ -96,8 +94,8 @@ simpleValuer (Cargo v _) = v
 simpleValuer _ = 0
 
 -- There is only one player, Player 1. Their home square is top-left.
-sampleGame :: GameConfig
-sampleGame = GameConfig [((0, 0), "Player 1")] simpleValuer
+players :: Map String Player
+players = fromList [("Player 1", Player standardValuer (0, 0))]
 
 -- These are the cargos in the initial world.
 sampleCargoes :: [[Item]]
@@ -117,7 +115,7 @@ uninhabitedWorld = generate (5, 5) gen where
 -- square.
 lifter :: Robot
 lifter = Robot (F Red 10) [] (P 10) $ hardcode
-  [Lift 0, Move S, Lift 0, Move E, Move S, Lift 0 , Move N, Move N, Move W]
+  [Lift 0, Move S, Lift 0, Move E, Move S, Lift 0 , Move N, Move NW, Pass]
 
 -- The aggressor tries to destroy the lifter.
 aggressor :: Robot
@@ -143,16 +141,14 @@ populatedWorld =
 evolution :: [Botworld]
 evolution = iterate update populatedWorld
 
--- This function displays the world (given our game config).
-display :: Botworld -> String
-display = see sampleGame
-
 -- When run, this file prints out the initial state, the final state, and
 -- a scoreboard.
 main :: IO ()
 main = do
-  let initialWorld = evolution !! 0
+  let initialWorld = head evolution
+  displayBotworld players initialWorld
+  mapM_ (displayEventGrid players . runEnvironment) (take 9 evolution)
   let finalWorld = evolution !! 10
-  putStr $ display initialWorld
-  putStr $ display finalWorld
-  putStr $ runReader (scoreboard finalWorld) sampleGame
+  displayBotworld players finalWorld
+  putStrLn ""
+  displayScoreboard players finalWorld

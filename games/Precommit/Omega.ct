@@ -1,0 +1,305 @@
+;; GENERIC REGISTERS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+PRG 65536:	EXEC SPIN_0	; After first action, simply spins.
+INP 1024:			; Standard input register
+OUT 1024:	Pass		; First action: Pass
+
+;; WORKSPACE REGISTERS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+WORKA	1024:	; Workspace a
+WORKB	1024:	; Workspace b
+
+;; PROGRAM CONSTANTS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+NIL:		Nil			; Always contains nil
+INSPECT:	Inspect 1		; Used to inspect a robot that just entered
+DROP:		Drop 0			; Used to drop the valuable box
+PASS:		Pass			; Used to pass when other robots are boring
+CRUN_R6:	CopyIfNil 2 6 0		; A conditional run of the precommit program (at the beginning of a new turn)
+RUN_R5:		CopyIfNil 3 5 0		; An unconditional run of the precommit loader
+PRECOM:		CopyIfNil 3 4 2		; An unconditional writing of a precommitted action
+RUN_R7:		CopyIfNil 3 7 0		; An unconditional jump into a spin loop
+RPRG:		0			; Location of program register
+ROUT:		2			; Location of output register
+RNIL:		3			; Location of unconditional Nil register
+CPIFNIL:	3			; Encoding of CopyIfNil
+SPDBND:		2			; Foreign processor must have more than this much speed
+REGBND:		6			; Foreign machine must have more than this many registers
+
+
+;; STANDARD REGISTERS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ARG 1024:		; Used for program arguments
+STACK 65536:		; For saving & restoring registers
+YES 1024:		; Program to run after success
+NO 1024:		; Program to run after failure
+
+
+;; MACHINE STATES ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; STATE 0 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+							; Waits for a new turn then enters state 0.
+SPIN_0:		CONDEXEC	OUT	ZERO		; Run ZERO if a new turn has begun.
+		EXEC		SPIN_0			; Otherwise, run SPIN_0
+
+							; If there's another robot in the square, inspect it.
+ZERO:		DEST		INP	WORKA	INP	; Discard input[0] (the index)
+		DEST		INP	INP	WORKA	; Discard input[2:] (everything except the square view)
+		DEST            INP     INP     WORKA   ; Discard the tail of the square view (everything except the robot list)
+		DEST		INP	WORKA	INP	; Discard input[1][0] (self)
+		CONDEXEC	INP	RESET		; If remaining list is empty run RESET
+		WRITE		INSPECT			; Execute the INSPECT command
+		EXEC		SPIN_1			; Enter state 1
+
+;; STATE 1 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+							; Waits for a new turn then enters state 1.
+SPIN_1:		CONDEXEC	OUT	ONE		; Run ONE if a new turn has begun.
+		EXEC		SPIN_1			; Otherwise, run SPIN_1
+
+ONE:		DEST		INP	WORKA	INP	; Discard input[0] (the index)
+		DEST		INP	WORKA	INP	; Discard input[1] (the square view)
+		CONDEXEC	INP	RESET		; Run RESET if there is no input remaining; inspection failed
+
+							; INP now holds tuple (processor speed, machine length, registers)
+		DEST		INP	ARG	INP	; Load processor speed into ARG, INP is now (machine length, registers)
+		CONS		ARG	SPDBND	ARG	; set ARG to (processor speed, 2)
+		COPY		ONE_LEN	YES		; Will run ONE_LEN if processor speed > 2
+		COPY		RESET	NO		; Will run RESET otherwise
+		EXEC		GT			; check processor speed > 2
+							; We now know they have speed at least 3 (sufficient to run spin loops)
+ONE_LEN:	DEST		INP	ARG	INP	; Load machine length into ARG (INP now contains the robot's registers)
+		CONS		ARG	REGBND	ARG	; set ARG to (machine length, 6)
+		COPY		ONE_PRG	YES		; Will run OUT_2 if machine length > 6
+		COPY		RESET	NO		; Will run RESET otherwise
+		EXEC		GT			; check machine length > 6
+
+							; We now know they have at least 7 registers (sufficient to precommit)
+ONE_PRG:	DEST		INP	WORKA	INP	; Put the robot's PRG register into WORKA (and the rest back into INP)
+		DEST		WORKA	WORKB	WORKA	; Discard the R0 limit information.
+							; We want to require (PRG[0] = CRUN_R6 | PRG[0] = RUN_R5)
+		CONDEXEC	WORKA	RESET		; Run RESET if the program register is empty.
+		DEST		WORKA	WORKA	WORKB	; PRG[0] into WORKA, PRG[1:] into WORKB
+		PUSH		WORKA	STACK		; PRG[0] onto STACK
+		CONS		WORKA	CRUN_R6	ARG	; Set ARG to (PRG[0], CRUN_R6)
+		COPY		ONE_PR6	YES		; Run ONE_PR6 if PRG[0] = CRUN_R6
+		COPY		ONE_PR5	NO		; Run ONE_PR5 otherwise
+		EXEC		EQ			; Check PRG[0] = CRUN_R6
+
+ONE_PR6:	POP		STACK	WORKA		; PRG[0] was CRUN_R6. Yay! Fix the stack and run ONE_R3.
+		EXEC		ONE_R3
+
+							; If we're here, PRG[0] isn't conditionally running R6.
+							; It had better be running R5 (the spin loop that loads R6) instead!
+ONE_PR5:	POP		STACK	WORKA		; PRG[0] into WORKA
+		CONS		WORKA	RUN_R5	ARG	; Set ARG to (PRG[0], RUN_R5)
+		COPY		ONE_R3	YES		; Run ONE_R3 if PRG[0] = RUN_R5
+		COPY		RESET	NO		; Run RESET otherwise (PRG[0] didn't obviously run R5 or R6)
+		EXEC		EQ			; Check PRG[0] = RUN_R5
+
+							; We now know that the program is either running R5 or R6
+							; (R2 is always Nil at the moment of inspection)
+							; Of course, this assumes R3 is Nil. Let's verify that.
+							; Let's verify that R3 is Nil.
+ONE_R3:		DEST		INP	WORKA	INP	; Discard program input register
+		DEST		INP	WORKA	INP	; Discard program output register
+		DEST		INP	ARG	INP	; Load R3 into ARG
+		DEST		ARG	WORKA	ARG	; Discard the R3 limit information
+		CONS		NIL	ARG	ARG	; (Nil, R3) into ARG
+		COPY		ONE_R4	YES		; Run ONE_R4 if R3 is Nil
+		COPY		RESET	NO		; Run RESET otherwise
+		EXEC		EQ			; Check that R3 is Nil
+
+							; Now let's make sure that the unconditional action is the
+							; self-reflection that Omega desires.
+ONE_R4:		DEST		INP	WORKA	INP	; Load R4 into WorkA
+		DEST		WORKA	WORKB	WORKA	; Discard R4 limit information
+		CONS		WORKA	INSPECT	ARG	; Set ARG to (R4, INSPECT)
+		COPY		ONE_R5	YES		; Run ONE_R5 if R4 is INSPECT
+		COPY		RESET	NO		; Run RESET Otherwise
+		EXEC		EQ			; Check that R4 is INSPECT
+
+							; Now we are confident that the program will immediately run R5 or R6.
+							; Let's make sure that those are appropriate spinners or precommitters.
+ONE_R5:		DEST		INP	WORKA	INP	; Load R5 into WORKA (INP now holds R6+)
+		DEST		WORKA	WORKB	WORKA	; Discard R5 limit information
+
+							; We want to know that R5 is a spin loop that loads R6
+							; Thus we need R5[0]=CRUN_R6 and R5[1]=RUN_R5
+		CONDEXEC	WORKA	RESET		; Run RESET if R5 is empty.
+		DEST		WORKA	WORKA	WORKB	; R5[0] into WORKA, R5[1:] into WORKB
+		PUSH		WORKB	STACK		; R5[1:] onto the stack
+		CONS		WORKA	CRUN_R6	ARG	; Set ARG to (R5[0], CRUN_R6)
+		COPY		ONE_R51	YES		; Run ONE_R51 if R5[0] = CRUN_R6
+		COPY		RESET1	NO		; Fix the stack and run RESET otherwise
+		EXEC		EQ			; Check that R5[0] conditionally runs R6
+ONE_R51:	POP		STACK	WORKA		; R5[1:] into WORKA
+		CONDEXEC	WORKA	RESET		; Run RESET if R5 had only 1 instruction
+		DEST		WORKA	WORKA	WORKB	; R5[1] into WORKA
+		CONS		WORKA	RUN_R5	ARG	; Set ARG to (R5[1], RUN_R5)
+		COPY		ONE_R6	YES		; Run ONE_R6 if R5[1] = RUN_R5
+		COPY		RESET	NO		; Run RESET otherwise
+		EXEC		EQ			; Check that R5[1] = RUN_R5
+
+							; If we made it this far then R5 is a spin loop that runs R6.
+							; Now we need to verify that R6 is a precommiter that loads R7,
+							; and then that R7 is a spin loop that loads anything else.
+ONE_R6:		DEST		INP	WORKA	INP	; Load R6 into WORKA
+		DEST		WORKA	WORKB	WORKA	; Discard R6 limit information
+		CONDEXEC	WORKA	RESET		; Run RESET if R6 is empty
+		DEST		WORKA	WORKA	WORKB	; R6[0] into WORKA, R6[1:] into WORKB
+		PUSH		WORKB	STACK		; R6[1:] onto STACK
+		CONS		WORKA	PRECOM	ARG	; Set ARG to (R6[0], PRECOM)
+		COPY		ONE_R61	YES		; Run ONE_R61 if R6[0] unconditionally writes a precommitted action
+		COPY		RESET1	NO		; Fix the stack and RESET otherwise
+		EXEC		EQ			; Check R6[0] = PRECOM
+ONE_R61:	POP		STACK	WORKA		; R6[1:] into WORKA
+		CONDEXEC	WORKA	RESET		; Run RESET if R6 had only one instruction
+		DEST		WORKA	WORKA	WORKB	; R6[1] into WORKA
+		CONS		WORKA	RUN_R7	ARG	; Set ARG to (R6[1], RUN_R7)
+		COPY		ONE_R7	YES		; Run ONE_R7 if R6[1] runs R7
+		COPY		RESET	NO		; Run RESET otherwise
+		EXEC		EQ			; Check R6[1] = R7
+
+							; We now know that the robot was waiting in a spin loop,
+							; waiting to immediately write a precommitted action into output
+							; and then run R7. All we need to verify now is that R7 is a spin loop.
+
+							; We don't care where R7 sends us, so we first need to verify that
+							; R7[0] is of the form CopyIfNil ROUT ??? RPRG.
+ONE_R7:		DEST		INP	INP	WORKA	; Load R7 into INP (discard remaining registers)
+		DEST		INP	WORKA	INP	; Discard R7 limit information
+		CONDEXEC	INP	RESET		; Run RESET if R7 has no instructions
+		DEST		INP	WORKA	INP	; R7[0] into WORKA, R7[1:] into INP
+		CONDEXEC	WORKA	RESET		; Run RESET if R7[0] was invalid (Nil is not an instruction)
+		DEST		WORKA	WORKA	WORKB	; R7[0][0] into WORKA, R7[0][1:] into WORKB
+		PUSH		WORKB	STACK		; R7[0][1:] onto STACK
+		CONS		WORKA	CPIFNIL	ARG	; Set ARG to (R7[0][0], CopyIfNil)
+		COPY		ONE_701	YES		; Run ONE_701 if R7[0][0] = CopyIfNil
+		COPY		RESET1	NO		; Fix the stack and run RESET otherwise
+		EXEC		EQ			; Check R7[0][0] = CopyIfNil
+ONE_701:	POP		STACK	WORKA		; R7[0][1:] into WORKA
+		CONDEXEC	WORKA	RESET		; Run RESET if R7[0] was invalid (no args for CopyIfNil)
+		DEST		WORKA	WORKA	WORKB	; R7[0][1] into WORKA, R7[0][2:] into WORKB
+		PUSH		WORKB	STACK		; R7[0][2:] onto STACK
+		CONS		WORKA	ROUT	ARG	; Set ARG to (R7[0][1], ROUT)
+		COPY		ONE_703	YES		; Run ONE_703 if R7[0][1] = ROUT
+		COPY		RESET1	NO		; Fix the stack and run RESET otherwise
+		EXEC		EQ			; Check R7[0][1] = ROUT
+ONE_703:	POP		STACK	WORKA		; R7[0][2:] into WORKA
+		CONDEXEC	WORKA	RESET		; Run RESET if R7[0] was invalid (only one arg for CopyIfNil)
+		DEST		WORKA	WORKB	WORKA	; Discard R7[0][2], R7[0][3] into WORKA
+		CONS		WORKA	RPRG	ARG	; Set ARG to (R7[0][3], RPRG)
+		COPY		ONE_R71	YES		; Run ONE_R71 if R7[0][3] = RPRG
+		COPY		RESET	NO		; Run RESET otherwise
+		EXEC		EQ			; Check R7[0][3] = RPRG
+
+							; We now know that R7[0] was CopyIfNil ROUT ??? RPRG
+							; Now we just want to check that R7[1] is RUN_R7
+							; Thus convincing us that R7 is an appropriate spin loop.
+ONE_R71:	CONDEXEC	INP	RESET		; Run RESET if there is no R7[1]
+		DEST		INP	WORKA	INP	; Put R7[1] into WORKA
+		CONS		WORKA	RUN_R7	ARG	; Set ARG to (R7[1], RUN_R7)
+		COPY		ONE_YES	YES		; Run ONE_YES if R7[1] = RUN_R7
+		COPY		RESET	NO		; Run RESET otherwise
+		EXEC		EQ			; Check R7[1] = RUN_R7
+
+							; We have verified:
+							; 1. The program either loads R5 or R6
+							; 2. R3 is Nil
+							; 3. R5 is a spin loop that loads R6
+							; 4. R6 does a precommitted action (R4) then loads R7
+							; 5. R7 is a spin loop that loads something else
+							; Thus, we know that this robot will do the contents of R4,
+							; then wait for an entire turn doing nothing else,
+							; then continue running some program.
+ONE_YES:	WRITE		DROP			; This is what we wanted. Drop our box.
+		EXEC		SPIN_2			; And go to state 2.
+
+;; STATE 2 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+							; Waits for a new turn then enters state 2.
+SPIN_2:		CONDEXEC	OUT	TWO		; Run TWO if a new turn has begun.
+		EXEC		SPIN_2			; Otherwise, run SPIN_2
+
+TWO:		WRITE		PASS			; Pass.
+		EXEC		SPIN_2			; Forever.
+
+;; FUNCTIONS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+							; Used whenever the environment isn't perfect
+RESET:		WRITE		PASS			; Pass
+		EXEC		SPIN_0			; Spin in state 0
+
+							; Like RESET, but pops one item off the stack first
+RESET1:		POP		STACK	WORKA		; Pop one item off the stack
+		EXEC		RESET			; Run RESET
+
+							; Run YES if ARG[0] = ARG[1]. Run NO otherwise.
+EQ:		DEST		ARG	WORKA	WORKB	; Destructure ARG[0] into WORKA, ARG[1] into WORKB
+		CONDEXEC	WORKA	EQ_BNIL		; If WORKA is NIL, check WORKB=NIL
+		CONDEXEC	WORKB	NO		; Otherwise, if WORKB is NIL, the answer is NO
+		EXEC		EQ_NONILS		; Otherwise, recurse and try again.
+
+							; Given that WORKA is Nil
+EQ_BNIL:	CONDEXEC	WORKB	YES		; If WORKB is Nil then the answer is YES
+		EXEC		NO			; Otherwise the answer is NO
+
+							; Given WORKA and WORKB are non-nil
+EQ_NONILS:	DEST		WORKA	WORKA	ARG	; Break WORKA into head and tail
+		PUSH		ARG	STACK		; Push WORKA tail onto the stack
+		DEST		WORKB	WORKB	ARG	; Break WORKB into head and tail
+		PUSH		ARG	STACK		; Push WORKB tail onto the stack
+		PUSH		NO	STACK		; Push NO onto the stack
+		PUSH		YES	STACK		; Push YES onto the stack
+
+		COPY		EQ_REC	YES		; Run EQ_REC if head A = head B
+		COPY		EQ_NO	NO		; Run EQ_NO otherwise
+		CONS		WORKA	WORKB	ARG	; Put (head A, head B) into ARG
+		EXEC		EQ			; check head A = head B
+
+							; head A = head B
+EQ_REC:		POP		STACK	YES		; Restore the YES program
+		POP		STACK	NO		; Restore the NO program
+		POP		STACK	WORKB		; tail B is the new WORKB
+		POP		STACK	WORKA		; tail A is the new WORKA
+		CONS		WORKA	WORKB	ARG	; Set ARG to (tail A, tail B)
+		EXEC		EQ			; Recurse
+
+							; head A /= head B
+EQ_NO:		POP		STACK	YES		; Restore the YES program (who cares)?
+		POP		STACK	NO		; Restore the NO program (actually matters)
+		POP		STACK	WORKB		; Take WORKB junk off the stack.
+		POP		STACK	WORKA		; Take WORKA junk off the stack.
+		EXEC		NO			; The answer was NO.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+							; Checks whether ARG[0] > ARG[1]. Runs YES if yes, NO if no.
+GT:		DEST		ARG	WORKA	WORKB	; ARG[0] into WORKA, ARG[1] into WORKB
+		CONDEXEC	WORKA	NO		; if WORKA is Nil then it's not greater than shit.
+		CONDEXEC	WORKB	YES		; Otherwise, if WORKB is Nil then WORKA is surely bigger.
+		DEST		WORKA	WORKA	ARG	; Otherwise, WORKA = head A
+		PUSH		ARG	STACK		; and tail A goes on the stack
+		DEST		WORKB	WORKB	ARG	; and WORKB = head B
+		PUSH		ARG	STACK		; and tail B goes on the stack
+		PUSH		NO	STACK		; and NO goes on the stack
+		PUSH		YES	STACK		; and YES goes on the stack
+							; We are going to check head A > head B
+							; (the heads are the leading bits)
+		COPY		GT_YES	YES		; and we are going to do GT_YES if head A > head B
+		COPY		GT_REC	NO		; and GT_REC otherwise
+		CONS		WORKA	WORKB	ARG	; set ARG to (head A, head B)
+		EXEC		GT			; check head A > head B
+
+							; Handles the case where head A > head B
+GT_YES:		POP		STACK	YES		; restore the YES program
+		POP		STACK	NO		; restore the NO program
+		POP		STACK	WORKB		; remove WORKB junk from the stack
+		POP		STACK	WORKA		; remove WORKA junk from the stack
+		EXEC		YES			; the answer was yes
+
+							; Handles the case where the first and second bits match
+GT_REC:		POP		STACK	YES		; restore the YES program
+		POP		STACK	NO		; restore the NO program
+		POP		STACK	WORKB		; load the B tail into WORKB
+		POP		STACK	WORKA		; load the A tail into WORKA
+		CONS		WORKA	WORKB	ARG	; Set arg to (A tail, B tail)
+		EXEC		GT			; recurse

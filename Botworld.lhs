@@ -15,7 +15,7 @@
 %format <*> = "\mathop{<\!\!\ast\!\!>}"
 %format <$> = "\mathop{<\!\!\$\!\!>}"
 
-\title{Botworld 1.0\\(Technical Report)}
+\title{Botworld 1.1\\(Technical Report)}
 
 \author{Nate Soares,\; Benja Fallenstein\\[0.4em]Machine Intelligence Research Institute\\2030 Addison St.\ \#300\\Berkeley, CA 94704, USA\\[0.4em]{\tt \{nate,benja\}@@intelligence.org}}
 
@@ -101,13 +101,12 @@ This report is a literate Haskell file, so we must begin the code with the modul
 
 \begin{code}
 module Botworld where
+import Prelude hiding (lookup)
 import Control.Applicative ((<$>), (<*>))
 import Control.Monad (join)
-import Control.Monad.Reader (Reader, asks)
-import Data.List (delete, elemIndices, intercalate, sortBy)
-import Data.Maybe (catMaybes, isJust, fromMaybe, mapMaybe)
-import Data.Ord (comparing)
-import Text.Printf (printf)
+import Data.List (delete, elemIndices)
+import Data.Map (Map, assocs, fromList, lookup, mapWithKey)
+import Data.Maybe (catMaybes, isJust, mapMaybe)
 \end{code}
 
 Botworld cells may be either walls (which are immutable and impassible) or \emph{squares}, which may contain both \emph{robots} and \emph{items} which the robots carry and manipulate. We represent cells using the following type:
@@ -158,14 +157,14 @@ The color is not necessarily unique, but may help robots distinguish other robot
 
 \begin{code}
 data Color = Red | Orange | Yellow | Green | Blue | Violet | Black | White
-  deriving (Eq, Ord, Enum)
+  deriving (Eq, Ord, Enum, Show)
 \end{code}
 
 The frame strength limits the total weight of items that may be carried in the robot's inventory. Every item has a weight, and the combined weight of all carried items must not exceed the frame's strength.
 
 \begin{code}
 canLift :: Robot -> Item -> Bool
-canLift r item = strength (frame r) >= sum (map weight $ item : inventory r)
+canLift r item = strength (frame r) >= sum (weight <$> item : inventory r)
 \end{code}
 
 Robots also contain a register machine, which consists of a \emph{processor} and a \emph{memory}. The processor is defined purely by the number of instructions it can compute per Botworld step, and the memory is simply a list of registers.
@@ -222,7 +221,7 @@ Robots may also shatter robots into their component parts. As you might imagine,
 \begin{code}
 shatter :: Robot -> [Item]
 shatter r = FramePart (frame r) : ProcessorPart (processor r) : rparts where
-  rparts = map (RegisterPart . forceR Nil) (memory r)
+  rparts = RegisterPart . forceR Nil <$> memory r
 \end{code}
 
 \section{Commands and actions}
@@ -283,25 +282,57 @@ data Action
 
 \section{The step function}
 
-Botworld cells are updated given only the current state of the cell and the states of all surrounding cells. Wall cells are immutable, and thus we need only define the step function on squares.
+Botworld cells are updated in two alternating phases. First, in the \emph{environment phase}, robot commands are read from each robot's register machine's output register and these are used to affect the world. This generates an $Event$, which describes the action that each robot performed and the way in which each item was manipulated.
 
 \begin{code}
-step :: Square -> [(Direction, Cell)] -> Square
+data Event = Event
+  { robotActions :: [(Robot, Action)]
+  , untouchedItems :: [Item]
+  , droppedItems :: [Item]
+  , fallenItems :: [ItemCache]
+  } deriving Show
 \end{code}
 
-We begin by computing what each robot would like to do. We do this by reading from (and then zeroing out) the output register of the robot's register machine.
+This data structure makes it easy for programs (which get to see the $Event$) to differentiate beteween items that were untouched, items that were willingly dropped, and items which fell from a destroyed robot. In the last category, fallen robot parts are differentiated from fallen robot possessions.
 
-This leaves us both with a list of robots (which have had their machine's output register zeroed out) and a corresponding list of robot outputs.\footnote{The following code introduces the function |takeOutput :: Decodable o => Robot -> (Robot, Maybe o)|, defined in Appendix~\ref{app:robot-machine-interactions}, which reads a robot's output register, decodes the contents into a Haskell object, and clears the register.}
+\begin{code}
+data ItemCache = ItemCache
+  { components :: [Item]
+  , possessions :: [Item]
+  } deriving Show
+\end{code}
+
+When observing Botworld games, it is sometimes useful to hop directly from $Event$ to $Event$. For this, we define a convenience type.
+
+\begin{code}
+type EventGrid = Grid (Maybe Event)
+\end{code}
+
+After the environment phase there is a \emph{computation phase}, during which all remaining robots have their register machine's input register set (according to the $Event$) and then run (according to the host robot's processor). Each register machine is expected to leave a command in the output register at the end of the computation phase, for use in the next environment phase.
+
+A single Botworld step thus consists of one environment phase followed by one computation phase:
+
+\begin{code}
+step :: (Square, Map Direction Cell) -> Square
+step = computationPhase . environmentPhase
+\end{code}
+
+We will now define the environment phase and the computaition phase in turn.
+
+The environment phase begins by determining what each robot would like to do. We do this by reading from (and then zeroing out) the output register of the robot's register machine. This leaves us both with a list of robots (which have had their machine's output register zeroed out) and a corresponding list of robot outputs.\footnote{The following code introduces the function |takeOutput :: Decodable o => Robot -> (Robot, Maybe o)|, defined in Appendix~\ref{app:robot-machine-interactions}, which reads a robot's output register, decodes the contents into a Haskell object, and clears the register.}
+
+\subsection{Environment Phase}
 
 \savecolumns
 \begin{code}
-step sq neighbors = Square robots' items' where
-  (robots, intents) = unzip $ map takeOutput $ robotsIn sq
+environmentPhase :: (Square, Map Direction Cell) -> Event
+environmentPhase (sq, neighbors) = event where
+  (robots, intents) = unzip (takeOutput <$> robotsIn sq)
 \end{code}
 
 Notice that we read the robot's output register at the beginning of each Botworld step. (We run the robot register machines at the end of each step.) This means that robots must be initialized with their first command in the output register.
 
-\subsection{Resolving conflicts}
+\subsubsection{Resolving conflicts}
 
 Before we can compute the actions that are actually taken by each robot, we need to compute some data that will help us identify failed actions.
 
@@ -310,7 +341,7 @@ Before we can compute the actions that are actually taken by each robot, we need
 \restorecolumns
 \begin{code}
   contested :: [Bool]
-  contested = map isContested [0..pred $ length $ itemsIn sq] where
+  contested = isContested <$> [0..pred $ length $ itemsIn sq] where
 \end{code}
 
 We determine the indices of items that robots want to lift by looking at all lift orders that the ordering robot could in fact carry out:\footnote{The following code introduces the helper function |(!!?) :: [a] -> Int -> Maybe a|, used to safely index into lists, which is defined in Appendix~\ref{app:helpers}.}
@@ -344,7 +375,7 @@ To implement this behavior, we generate first a list corresponding by index to t
 \restorecolumns
 \begin{code}
   attacks :: [Int]
-  attacks = map numAttacks [0..pred $ length $ robotsIn sq] where
+  attacks = numAttacks <$> [0..pred $ length $ robotsIn sq] where
     numAttacks i = length $ filter (== i) allAttacks
     allAttacks = mapMaybe (getAttack =<<) intents
     getAttack (Inspect i) = Just i
@@ -370,14 +401,14 @@ We then generate a list corresponding by index to the robot list which for each 
   fled _ = False
 \end{code}
 
-\subsection{Determining actions}
+\subsubsection{Determining actions}
 
 We may now map robot commands onto the actions that the robots actually take. We begin by noting that any robot with invalid output takes the |Invalid| action.
 
 \restorecolumns
 \begin{code}
-  resolve :: Robot -> Maybe Command -> Action
-  resolve robot = maybe Invalid act where
+  perform :: Robot -> Maybe Command -> Action
+  perform robot = maybe Invalid act where
 \end{code}
 
 As we have seen, |Move| commands fail only when the robot attempts to move into a wall cell.
@@ -449,7 +480,6 @@ Robots \emph{can} destroy themselves. Programs should be careful to avoid uninte
 
 Build commands must also pass three checks in order to succeed:\footnote{The following code introduces the function |setState :: Memory -> Robot -> Robot|, defined in Appendix~\ref{app:robot-machine-interactions}.}
 
-
 \begin{enumerate*}
   \item All of the specified indices must specify actual items.
   \item None of the specified items may be contested.
@@ -472,30 +502,31 @@ Pass commands always succeed.
     act Pass = Passed
 \end{code}
 
-With the |resolve| function in hand it is trivial to compute the actions actually executed by the robots in the square:
+With the |perform| function in hand it is trivial to compute the actions actually executed by the robots in the square:
 
 \restorecolumns
 \begin{code}
   localActions :: [Action]
-  localActions = zipWith resolve robots intents
+  localActions = zipWith perform robots intents
 \end{code}
 
-\subsection{Updating items and robots}
+\subsubsection{Generating the event}
 
-With the local actions in hand, we can start computing the new robot and item lists. We begin by computing which items were unaffected and which items were willingly dropped.\footnote{The following code introduces the helper function |removeIndices :: [Int] -> [a] -> [a]| which is defined in Appendix~\ref{app:helpers}.}
+With the local actions in hand, we can start updating the robots and items. We begin by computing which items were unaffected and which items were willingly dropped.\footnote{The following code introduces the helper function |removeIndices :: [Int] -> [a] -> [a]| which is defined in Appendix~\ref{app:helpers}.}
 
 \restorecolumns
 \begin{code}
-  unaffected :: [Item]
-  unaffected = removeIndices (lifts ++ concat builds) (itemsIn sq) where
+  untouched :: [Item]
+  untouched = removeIndices (lifts ++ builds) (itemsIn sq) where
     lifts = [i | Lifted i <- localActions]
-    builds = [is | Built is _ <- localActions]
+    builds = concat [is | Built is _ <- localActions]
 
   dropped :: [Item]
-  dropped = [inventory r !! i | (r, Dropped i) <- zip robots localActions]
+  dropped = [item r i | (r, Dropped i) <- zip robots localActions] where
+    item r i = inventory r !! i
 \end{code}
 
-We cannot yet compute the new item list entirely, as doing so requires knowledge of which robots were destroyed. The items and parts of destroyed robots will fall into the square, but only \emph{after} the destroyed robot carries out their action.
+We cannot yet compute the new item state entirely, as doing so requires knowledge of which robots were destroyed. The items and parts of destroyed robots will fall into the square, but only \emph{after} the destroyed robot carries out their action.
 
 We now turn to robots that began in the square, and update their inventories. (Note that because the inventories of moving robots cannot change, we do not need to update the inventories of robots entering the square.)
 
@@ -520,42 +551,24 @@ We use this function to update the inventories of all robots that were originall
   veterans = zipWith3 updateInventory [0..] localActions robots
 \end{code}
 
-Now that we know the updated states of the robots, we can compute what items fall from the destroyed robots. In order to do this, we need to know which robots were destroyed. We compute whether each robot was destroyed and store the data in a list which corresponds by index to the original robot list.
+Now that we know the updated states of the robots, we can compute what items fall from the destroyed robots.
 
 \restorecolumns
 \begin{code}
-  survived :: [Bool]
-  survived = map isAlive [0..pred $ length veterans] where
-    isAlive n = n `notElem` [i | Destroyed i <- localActions]
+  fallen = [cache r | (i, r) <- zip [0..] veterans, died i] where
+    cache r = ItemCache (shatter r) (inventory r)
+    died n = n `elem` [i | Destroyed i <- localActions]
 \end{code}
 
-With this we can compute the list of items that fall from destroyed robots, given in part/inventory pairs.
+Computing the updated robot states is somewhat more difficult. Before we can, we must identify which robots enter this square from other squares. We compute this by looking at the intents of the robots in neighboring squares. Remember that move commands always succeed if the robot is moving into a non-wall square. Thus, all robots in neighboring squares which intend to move into this square will successfully move into this square.
 
 \restorecolumns
 \begin{code}
-  fallen :: [([Item], [Item])]
-  fallen = [(shatter r, inventory r) | (r, False) <- zip veterans survived]
-\end{code}
-
-We retain some structure in the list of fallen items which will be made visible to surviving robots in their program input.
-
-This is the last piece of data that we need to compute the updated item list in the square, which is just the |unaffected|, |dropped|, and |fallen| boxes without the additional structure:
-
-\restorecolumns
-\begin{code}
-  items' :: [Item]
-  items' = unaffected ++ dropped ++ concat [xs ++ ys | (xs, ys) <- fallen]
-\end{code}
-
-Computing the updated robot list is somewhat more difficult. Before we can, we must identify which robots enter this square from other squares. We compute this by looking at the intents of the robots in neighboring squares. Remember that move commands always succeed if the robot is moving into a non-wall square. Thus, all robots in neighboring squares which intend to move into this square will successfully move into this square.
-
-\restorecolumns
-\begin{code}
-  incomingFrom :: (Direction, Cell) -> [(Robot, Direction)]
-  incomingFrom (dir, neighbor) = mapMaybe movingThisWay cmds where
-    cmds = maybe [] (map takeOutput . robotsIn) neighbor
+  incomingFrom :: Direction -> Cell -> [Robot]
+  incomingFrom dir neighbor = mapMaybe movingThisWay cmds where
+    cmds = maybe [] (fmap takeOutput . robotsIn) neighbor
     movingThisWay (robot, Just (Move dir'))
-      | dir == opposite dir' = Just (robot, dir)
+      | dir == opposite dir' = Just robot
     movingThisWay _ = Nothing
 \end{code}
 
@@ -563,7 +576,8 @@ We compute both a list of entering robots and a corresponding list of the direct
 
 \restorecolumns
 \begin{code}
-  (travelers, origins) = unzip $ concatMap incomingFrom neighbors
+  immigrations = assocs $ mapWithKey incomingFrom neighbors
+  (travelers, origins) = unzip [(r, d) | (d, rs) <- immigrations, r <- rs]
 \end{code}
 
 We also determine the list of robots that have been created in this timestep:
@@ -581,98 +595,117 @@ This allows us to compute a list of all robots that either started in the square
   allRobots = veterans ++ travelers ++ children
 \end{code}
 
-\subsection{Running robots}
-
-All robots that remain in the square (and were not destroyed) will have their register machines run before the next step. Before they may be run, however, their input registers must be updated. Each robot receives five inputs:
-
-\begin{enumerate*}
-  \item The host robot's index in the following list.
-  \item The list of all robots in the square, including robots that exited, entered, were destroyed, and were created.
-  \item A list of actions corresponding to the list of robots.
-  \item The updated item list, with some additional structure.
-  \item Some private input.
-\end{enumerate*}
-
-We have already computed the list of all robots. It is worth noting here that when this robot list is converted into machine input, some information will be lost: processors and memories are not visible to other robots (except via |Inspect| commands). This data-hiding is implemented by the constree encoding code; see Appendix~\ref{app:encoding} for details.
-
-We next compute the list of actions corresponding to the list of robots. As with the robot list, some of this data will be lost when it is converted into machine input. Specifically, robots cannot distinguish between |Passed| and |Invalid| actions. Also, the results of an |Inspect| command are visible only to the inspecting robot. Again, this data-hiding is implemented by the constree encoding code; see Appendix~\ref{app:encoding} for details.
+We nest generate the corresponding list of actions.
 
 \restorecolumns
 \begin{code}
   allActions :: [Action]
   allActions = localActions ++ travelerActions ++ childActions where
-    travelerActions = map MovedIn origins
+    travelerActions = fmap MovedIn origins
     childActions = replicate (length children) Created
 \end{code}
 
-Finally, we compute the private input. If the robot executed a successful |Inspect| command then the private input includes information about the inspected robot's machine.
-
-Also, the private input differentiates between |Invalid| and |Passed| actions in a private fashion, so that each individual machine can know whether \emph{it itself} gave an invalid command in the previous step. (All other robots cannot distinguish between |Invalid| and |Passed| actions.)
+We have now computed the updated robots (and the corresponding actions) and the updated items (in three groups: untouched items, dropped items, and fallen items). This is all of the data that we need to complete the environment phase of the step function:
 
 \restorecolumns
 \begin{code}
-  privateInput :: Action -> Constree
-  privateInput Invalid = encode (1 :: Int)
-  privateInput (Inspected _ r) = encode
-    (processor r, length $ memory r, memory r)
-  privateInput _ = encode (0 :: Int)
+  event = Event (zip allRobots allActions) untouched dropped fallen
 \end{code}
 
-With these inputs in hand, we can run any given robot by updating their input register appropriately and then running the robot's register machine:\footnote{The following code introduces the function |setInput :: Encodable i => Robot -> i -> Robot|, defined in Appendix~\ref{app:robot-machine-interactions}.}
+\subsection{Computaiton phase}
+
+We now proceed to the computation phase of the step function. This function turns an $Event$ into an updated $Square$, by generating a new robot list and a new item list. The new robot list is generated by removing robots that exited or were destroyed, and running the register machines on the remaining robots. The new item list is generated by simply flattening the untouched, dropped, and fallen item lists into a single list.
+
+\savecolumns
+\begin{code}
+computationPhase :: Event -> Square
+computationPhase = Square <$> newRobotList <*> newItemList where
+  newRobotList :: Event -> [Robot]
+\end{code}
+
+The new robot list is generated by running the register machines on each remaining robot after updating that robot's register machine's input register.\footnote{The following code introduces the function |setInput :: Encodable i => Robot -> i -> Robot|, defined in Appendix~\ref{app:robot-machine-interactions}, which encodes a Haskell object into Constree and sets the robot's input register accordingly.}
 
 \restorecolumns
 \begin{code}
-  run :: Int -> Action -> Robot -> Robot
-  run index action robot = runMachine $ setInput robot input where
-    input = (index, allRobots, allActions, items, privateInput action)
-    items = (unaffected, dropped, fallen)
+  newRobotList event = runMachine <$> prepped where
+    prepped = [setInput r (createInput i a) | (i, r, a) <- triples]
+    triples = [(i, r, a) | (i, r, a) <- zip3 [0..] robots actions, isHere i a]
+    isHere i a = not (isExit a || i `elem` [x | Destroyed x <- actions])
+    (robots, actions) = unzip $ robotActions event
 \end{code}
 
-The register machines are run as described in the following function. It makes use of the constree register machine, specifically the function |runFor :: Int -> Memory -> Either Error Memory|. Refer to Appendix~\ref{app:constree} for details.
+Before being run, each robot receives three inputs:
+
+\begin{enumerate*}
+  \item The host robot's index in the robot/action list.
+  \item The $Event$ object.
+  \item Some private input.
+\end{enumerate*}
+
+This data is encoded into the constree language, and the encoding is lossy: the contents of each robot's register machine are not included in the robot list, and robots cannot distinguish between |Passed| and |Invalid| actions taken by other robots. Also, the results of an |Inspect| command are only visible to the inspecting robot. This data-hiding is implemented by the constree encoding code; see Appendix~\ref{app:encoding} for details.
+
+The following function creates the input object for each robot (if that robot remains in the square and survived):
+
+\restorecolumns
+\begin{code}
+    createInput :: Int -> Action -> (Int, Event, Constree)
+    createInput n a = (n, event, private a)
+\end{code}
+
+A robot's private input either contains the results of a successful |Inspect| command or lets a robot know when its previous command was |Invalid|. Otherwise, the private input is empty.
+
+\restorecolumns
+\begin{code}
+  private :: Action -> Constree
+  private (Inspected _ r) = encode (processor r, length $ memory r, memory r)
+  private Invalid = encode True
+  private _ = Nil
+\end{code}
+
+Robot register machines are run using the |runFor :: Int -> Memory -> Either Error Memory| Constree function defined in Appendix~\ref{app:constree}. Notice that a robot with invalid code has all of its registers cleared.\footnote{The following code introduces the function |forceR :: Constree -> Register -> Register| which sets the contents of a constree register, defined in APpendix~\ref{app:constree}.}
 
 \restorecolumns
 \begin{code}
   runMachine :: Robot -> Robot
   runMachine robot = case runFor (speed $ processor robot) (memory robot) of
     Right memory' -> robot{memory=memory'}
-    Left _ -> robot{memory=map (forceR Nil) (memory robot)}
+    Left _ -> robot{memory=forceR Nil <$> memory robot}
 \end{code}
 
-We only run robots that both stayed in the square and were not destroyed. We figure out which robots stayed and survived according to their index in the list of all robots. We can figure this out by checking the local action list and the |survived| list defined previously, remembering that all robots that weren't in the original robot list either entered or were created (and that all such robots are present).\footnote{The following code introduces the helper function |isExit :: Action -> Bool|, defined in Appendix~\ref{app:helpers}.}
+Finally, we compute the new item list by simply discarding the additional item structure that was kept around for the purposes of robot input.
 
 \restorecolumns
 \begin{code}
-  present :: Int -> Bool
-  present i = stillAlive i && stillHere i where
-    stillAlive = fromMaybe True . (survived !!?)
-    stillHere = maybe True (not . isExit) . (localActions !!?)
+  newItemList :: Event -> [Item]
+  newItemList event = untouched ++ dropped ++ fallen where
+    untouched = untouchedItems event
+    dropped = droppedItems event
+    fallen = concat [xs ++ ys | ItemCache xs ys <- fallenItems event]
 \end{code}
 
-Finally, we construct the new robot list by running all present robots.
-
-\restorecolumns
-\begin{code}
-  robots' :: [Robot]
-  robots' = [run i a r | (i, a, r) <- triples, present i] where
-    triples = zip3 [0..] allActions allRobots
-\end{code}
+This completes the computation phase.
 
 \subsection{Summary}
 
 This fully specifies the step function for Botworld cells. To summarize:
 
+\paragraph{Environment phase}
 \begin{enumerate*}
   \item Robot machine output registers are read to determine robot intents.
   \item Robot actions are computed from robot intents.
   \item Lifted and dropped items are computed.
   \item Robot inventories are updated.
   \item Fallen items are computed.
-  \item The item list for the updated square is determined.
   \item Incoming robots are computed.
-  \item Constructed robots are added to consideration.
-  \item Destroyed robots are removed from consideration.
-  \item Machine input registers are set.
-  \item Robot register machines are executed.
+  \item Constructed robots are added.
+\end{enumerate*}
+
+\paragraph{Computation phase}
+\begin{enumerate*}
+  \item Destroyed and exited robots are removed.
+  \item Register machine input registers are set.
+  \item Register machines are executed.
+  \item The item list is flattened.
 \end{enumerate*}
 
 As noted previously, machine programs are expected to leave a command in the output register for use in the next step.
@@ -683,29 +716,43 @@ Botworld games can vary widely. A simple game that Botworld lends itself to easi
 
 Remember that \emph{robots are not players}: a player may only be able to specify the initial program for a single robot, but players may well attempt to acquire whole fleets of robots with code distributed throughout.
 
-As such, Botworld games are not scored according to the possessions of any particular robot. Rather, each player is assigned a \emph{home square}, and the score of a player is computed according to the items possessed by all robots in the player's home square at the end of the game. (The robots are airlifted out and their items are extracted for delivery to the player.) Thus, a game configuration also needs to assign specific values to the various items.
-
-Formally, we define a game configuration as follows:
+As such, Botworld games are not scored according to the possessions of any particular robot. Rather, each player is assigned a \emph{home square}, and the score of a player is computed according to the items possessed by all robots in the player's home square at the end of the game. (We imagine that the robots are airlifted out and their items are extracted for delivery to the player.) Each player may have their own assignment of values to items.
 
 \begin{code}
-data GameConfig = GameConfig
-  { players :: [(Position, String)]
-  , valuer :: Item -> Int
+data Player = Player
+  { values :: Item -> Int
+  , home :: Position
   }
 \end{code}
 
-With a game configuration in hand, we can compute how many points a single robot has achieved:
+Because the values of items can vary by player, we need to know the player under consideration in order to compute the total value of a robot's inventory.
 
 \begin{code}
-points :: Robot -> Reader GameConfig Int
-points r = (\value -> sum (map value $ inventory r)) <$> asks valuer
+points :: Player -> Robot -> Int
+points player r = sum (values player <$> inventory r)
 \end{code}
 
-Then we can compute the total score in any particular square:
+A player's score at the end of a Botworld game is the sum of the values of all items held by all robots in that player's home square at the end of the game.
 
 \begin{code}
-score :: Botworld -> Position -> Reader GameConfig Int
-score g = maybe (return 0) (fmap sum . mapM points . robotsIn) . at g
+score :: Botworld -> Player -> Int
+score world player = sum (points player <$> robots) where
+  robots = maybe [] robotsIn $ at world $ home player
+\end{code}
+
+Most players use a very simple value function which assigns value only to cargo items in direct correspondence with the cargo type. For convenience, that value function is defined below.
+
+\begin{code}
+standardValuer :: Item -> Int
+standardValuer (Cargo t _) = t
+standardValuer _ = 0
+\end{code}
+
+Because Botworld steps begin with an environment phase, robots must be pre-loaded with a command to be executed in the initial step. Some games find this inconvenient, and prefer to begin with a robot phase instead of an environment phase. Such games may begin with a \emph{creation phase} instead of an environment phase. The creation phase generates an event in which all robots are marked $Created$ and take no actions. Such games may begin with a creation phase followed by alternating computation and environment phases.
+
+\begin{code}
+creationPhase :: Square -> Event
+creationPhase (Square rs is) = Event (zip rs $ repeat Created) is [] []
 \end{code}
 
 We do not provide any example games in this report. Some example games are forthcoming.
@@ -737,6 +784,9 @@ data Grid a = Grid
   , cells :: [a]
   } deriving Eq
 
+instance Functor Grid where
+  fmap f g = g{cells=fmap f $ cells g}
+
 locate :: Dimensions -> Position -> Int
 locate (x, y) (i, j) = (j `mod` y) * x + (i `mod` x)
 
@@ -748,9 +798,35 @@ at (Grid dim xs) p = xs !! locate dim p
 
 change :: (a -> a) -> Position -> Grid a -> Grid a
 change f p (Grid dim as) = Grid dim $ alter (locate dim p) f as
+\end{code}
 
+The following series of functions are useful for creating grids. The first creates a grid from a generator function:
+
+\begin{code}
 generate :: Dimensions -> (Position -> a) -> Grid a
-generate dim gen = let g = Grid dim (map gen $ indices g) in g
+generate dim gen = let g = Grid dim (gen <$> indices g) in g
+\end{code}
+
+The next generates a grid from a list, padded with |Nothing|s as neccessary:
+
+\begin{code}
+fillGrid :: Dimensions -> [a] -> Grid (Maybe a)
+fillGrid dim xs = generate dim (\pos -> xs !!? locate dim pos)
+\end{code}
+
+The final three are useful for creating a grid from a list where only one dimension is known: for example, creating a grid of width 3 from a list, using as few rows as possible, padded as necessary.
+
+\begin{code}
+cutGrid :: (Int -> Dimensions) -> [a] -> Grid (Maybe a)
+cutGrid cut xs = generate dim get where
+  get pos = xs !!? locate dim pos
+  dim = cut $ length xs
+
+vGrid :: Int -> [a] -> Grid (Maybe a)
+vGrid maxw = cutGrid (\len -> (min maxw len, (len + pred maxw) `div` maxw))
+
+hGrid :: Int -> [a] -> Grid (Maybe a)
+hGrid maxh = cutGrid (\len -> ((len + pred maxh) `div` maxh, min maxh len))
 \end{code}
 
 \section{Directions}
@@ -772,14 +848,34 @@ towards d (x, y) = (x + dx, y + dy) where
 
 \section{Botworld Grids}
 
-Finally, we define a function that updates an entire Botworld grid by one step:
+Next, we define functions that update an entire Botworld grid. The first two functions run a single phase of the two-phase step function on an entire grid:
+
+\begin{code}
+runCreation :: Botworld -> EventGrid
+runCreation = fmap (fmap creationPhase)
+
+runEnvironment :: Botworld -> EventGrid
+runEnvironment bw = bw{cells=doEnv <$> indices bw} where
+  doEnv pos = environmentPhase . withNeighbors pos <$> at bw pos
+  withNeighbors pos sq = (sq, fromList $ walk pos <$> [N ..])
+  walk pos dir = (dir, at bw $ towards dir pos)
+
+runRobots :: EventGrid -> Botworld
+runRobots = fmap (fmap computationPhase)
+\end{code}
+
+The next updates an entire Botworld grid by one step:
 
 \begin{code}
 update :: Botworld -> Botworld
-update g = g{cells=map doStep $ indices g} where
-  doStep pos = flip step (fellows pos) <$> at g pos
-  fellows pos = map (walk pos) [N ..]
-  walk p d = (d, at g $ towards d p)
+update = runRobots . runEnvironment
+\end{code}
+
+A final convenience function updates from one event directly to the next.
+
+\begin{code}
+update' :: EventGrid -> EventGrid
+update' = runEnvironment . runRobots
 \end{code}
 
 \chapter{Constree Language} \label{app:constree}
@@ -905,7 +1001,7 @@ Aside from executing robot machines, there are three ways that Botworld changes 
 setState :: Memory -> Robot -> Robot
 setState m robot = robot{memory=fitted} where
   fitted = zipWith (forceR . contents) m (memory robot) ++ padding
-  padding = map (forceR Nil) (drop (length m) (memory robot))
+  padding = forceR Nil <$> drop (length m) (memory robot)
 \end{code}
 
 \paragraph{A robot may have its output register read.} Whenever the output register is read, it is set to |Nil| thereafter.
@@ -1138,6 +1234,15 @@ instance Encodable Action where
     Built is _           -> encode (15 :: Int, is)
     BuildInterrupted is  -> encode (16 :: Int, is)
     where direction d = head $ elemIndices d [N ..]
+
+instance Encodable ItemCache where
+  encode (ItemCache pt ps) = encode (pt, ps)
+
+instance Decodable ItemCache where
+  decode = fmap (uncurry ItemCache) . decode
+
+instance Encodable Event where
+  encode (Event ras u d f) = encode (rs, as, (u, d, f)) where (rs, as) = unzip ras
 \end{code}
 
 \chapter{Helper Functions} \label{app:helpers}
@@ -1210,140 +1315,6 @@ dropN 0 _ xs = xs
 dropN n p (x:xs) = if p x then dropN (pred n) p xs else x : dropN n p xs
 dropN _ _ [] = []
 \end{code}
-
-\chapter{Visualization} \label{app:visualization}
-
-The remaining code implements a visualizer for Botworld grids. This allows you to print out Botworld grids and Botworld scoreboards (assuming that you have access to a Botworld game configuration).
-
-In Botworld grid visualizations, colors are given a three-letter code:
-
-\begin{code}
-instance Show Color where
-  show Red = "RED"
-  show Orange = "RNG"
-  show Yellow = "YLO"
-  show Green = "GRN"
-  show Blue = "BLU"
-  show Violet = "VLT"
-  show Black = "BLK"
-  show White = "WYT"
-\end{code}
-
-Each cell is shown using three lines: the first for items, the second for item weights, the third for robots (by color). At most two things are shown per row. (This is by no means a perfect visualization, but it works well for simple games.)
-
-\savecolumns
-\begin{code}
-visualize :: Botworld -> Reader GameConfig String
-visualize g = do
-  rowStrs <- mapM showRow rows :: Reader GameConfig [String]
-  return $ concat rowStrs ++ line
-  where
-    unpaddedRows = chunksOf r (cells g) where (r, _) = dimensions g
-    pad row = row ++ replicate (maxlen - length row) Nothing
-    rows = map pad unpaddedRows
-    maxlen = maximum (map length unpaddedRows)
-
-    line = concat (replicate maxlen "+---------") ++ "+\n"
-\end{code}
-
-Items are crudely shown as follows:
-
-\restorecolumns
-\begin{code}
-    showValue :: Item -> Reader GameConfig String
-    showValue b = do
-      value <- asks valuer
-      return $ case b of
-        FramePart (F Red _)     -> "[R]"
-        FramePart (F Orange _)  -> "[O]"
-        FramePart (F Yellow _)  -> "[Y]"
-        FramePart (F Green _)   -> "[G]"
-        FramePart (F Blue _)    -> "[B]"
-        FramePart (F Violet _)  -> "[V]"
-        FramePart (F Black _)   -> "[K]"
-        FramePart (F White _)   -> "[W]"
-        ProcessorPart _         -> "[#]"
-        RegisterPart _          -> "[|]"
-        Shield                  -> "\\X/"
-        x -> printf "$%d" (value x)
-
-    showWeight :: Item -> String
-    showWeight item
-      | weight item > 99 = "99+"
-      | otherwise = printf "%dg" $ weight item
-
-    showRow :: [Cell] -> Reader GameConfig String
-    showRow xs = do
-      v <- showCells cellValue xs
-      w <- showCells cellWeight xs
-      r <- showCells (return <$> cellRobots) xs
-      return $ line ++ v ++ w ++ r
-
-    showCells strify xs = do
-      strs <- mapM (maybe (return "/////////") strify) xs
-      return $ "|" ++ intercalate "|" strs ++ "|\n"
-
-    cellValue sq = do
-      value <- asks valuer
-      case sortBy (flip $ comparing value) (itemsIn sq) of
-        [] -> return "         "
-        [b] -> printf "   %3s   " <$> showValue b
-        [b, c] -> printf " %3s %3s " <$> showValue b <*> showValue c
-        (b:c:_) -> printf " %3s %3s\x2026" <$> showValue b <*> showValue c
-
-    cellWeight sq = do
-      value <- asks valuer
-      return $ case sortBy (flip $ comparing value) (itemsIn sq) of
-        [] -> "         "
-        [b] -> printf "   %3s   " (showWeight b)
-        [b, c] -> printf " %3s %3s " (showWeight b) (showWeight c)
-        (b:c:_) -> printf " %3s %3s\x2026" (showWeight b) (showWeight c)
-
-    cellRobots sq = case sortBy (comparing $ color . frame) (robotsIn sq) of
-      [] -> "         "
-      [f] -> printf "   %s   " (clr f)
-      [f, s] -> printf " %s %s " (clr f) (clr s)
-      (f:s:_) -> printf " %s %s\x2026" (clr f) (clr s)
-      where clr = show . color . frame
-
-    chunksOf _ [] = []
-    chunksOf r xs = (take r xs) : (chunksOf r $ drop r xs)
-\end{code}
-
-Finally, the scoreboard function takes a game configuration and prints out a scoreboard detailing the scores of each player (broken down according to the robots in the player's home square at the end of the game).
-
-\begin{code}
-scoreboard :: Botworld -> Reader GameConfig String
-scoreboard g = do
-  scores <- mapM scoreCell =<< sortedPositions
-  return $ unlines $ concat scores
-  where
-    sortedPositions = do
-      ps <- map fst <$> asks players
-      scores <- mapM (score g) ps
-      let comparer = flip $ comparing snd
-      return $ map fst $ sortBy comparer $ zip ps scores
-
-    scoreCell p = do
-      header <- playerLine p
-      let divider = replicate (length header) '-'
-      breakdown <- case maybe [] robotsIn $ at g p of
-        [] -> return ["  No robots in square."]
-        rs -> mapM robotScore rs
-      return $ header : divider : breakdown
-
-    robotScore r = do
-      pts <- points r
-      let name = printf "  %s robot" (show $ color $ frame r) :: String
-      return $  name ++ ": $" ++ printf "%d" pts
-
-    playerLine p = do
-      total <- score g p
-      name <- lookup p <$> asks players
-      let moniker = fromMaybe (printf "Player at %s" (show p)) name
-      return $ printf "%s $%d" moniker total
-\end{code}
-
 \end{appendices}
 
 \bibliography{Botworld}{}
