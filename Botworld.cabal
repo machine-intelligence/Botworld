@@ -1,5 +1,5 @@
 name:                Botworld
-version:             1.0.0.0
+version:             1.0.0.1
 synopsis:            A cellular automaton used to study self-modifying agents
                      which are embedded in their environment.
 description:         See http://intelligence.org/files/Botworld.pdf
