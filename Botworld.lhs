@@ -978,11 +978,23 @@ instance (Encodable a, Encodable b, Encodable c) => Encodable (a, b, c) where
   encode (a, b, c) = encode (a, (b, c))
 
 instance (Decodable a, Decodable b, Decodable c) => Decodable (a, b, c) where
-  decode = fmap flatten . decode where flatten (a, (b, c)) = (a, b, c)
+  decode = fmap f . decode where f (a, (b, c)) = (a, b, c)
+
+instance (Encodable a, Encodable b, Encodable c, Encodable d) =>
+  Encodable (a, b, c, d) where
+  encode (a, b, c, d) = encode (a, (b, c, d))
+
+instance (Decodable a, Decodable b, Decodable c, Decodable d) =>
+  Decodable (a, b, c, d) where
+  decode = fmap f . decode where f (a, (b, c, d)) = (a, b, c, d)
 
 instance (Encodable a, Encodable b, Encodable c, Encodable d, Encodable e) =>
   Encodable (a, b, c, d, e) where
-  encode (a, b, c, d, e) = encode (a, (b, (c, (d, e))))
+  encode (a, b, c, d, e) = encode (a, (b, c, d, e))
+
+instance (Decodable a, Decodable b, Decodable c, Decodable d, Decodable e) =>
+  Decodable (a, b, c, d, e) where
+  decode = fmap f . decode where f (a, (b, c, d, e)) = (a, b, c, d, e)
 
 instance Encodable Bool where
   encode False = Nil
@@ -1036,11 +1048,20 @@ instance Decodable Register where
 instance Encodable Color where
   encode = encode . fromEnum
 
+instance Decodable Color where
+  decode t = ([Red ..] !!?) =<< decode t
+
 instance Encodable Frame where
   encode (F c s) = encode (c, s)
 
+instance Decodable Frame where
+  decode = fmap (uncurry F) . decode
+
 instance Encodable Processor where
   encode (P s) = encode s
+
+instance Decodable Processor where
+  decode = fmap P . decode
 
 instance Encodable Item where
   encode (Cargo t w)        = encode (0 :: Int, t, w)
@@ -1048,6 +1069,15 @@ instance Encodable Item where
   encode (ProcessorPart p)  = encode (2 :: Int, p)
   encode (FramePart f)      = encode (3 :: Int, f)
   encode Shield             = encode (4 :: Int, Nil)
+
+instance Decodable Item where
+  decode t = case decode t :: Maybe (Int, Constree) of
+    Just (0, args)  -> uncurry Cargo <$> decode args
+    Just (1, args)  -> RegisterPart <$> decode args
+    Just (2, args)  -> ProcessorPart <$> decode args
+    Just (3, args)  -> FramePart <$> decode args
+    Just (4, Nil)   -> Just Shield
+    _               -> Nothing
 
 instance Encodable Direction where
   encode = encode . fromEnum
@@ -1070,9 +1100,7 @@ instance Encodable Command where
   encode (Destroy i)   = encode (4 :: Int, i)
   encode (Build is m)  = encode (5 :: Int, is, m)
   encode Pass          = encode (6 :: Int, Nil)
-\end{code}
 
-\begin{code}
 instance Decodable Command where
   decode t = case decode t :: Maybe (Int, Constree) of
     Just (0, d)    -> Move <$> (([N ..] !!?) =<< decode d)
