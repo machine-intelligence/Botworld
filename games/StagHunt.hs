@@ -41,3 +41,15 @@ players = fromList
 
 display :: Botworld -> IO ()
 display = displayBotworld players
+
+display' :: EventGrid -> IO ()
+display' = displayEventGrid players
+
+run :: Memory -> Memory -> IO ()
+run r b = do
+  let initial = mintWorld r b
+  display initial
+  let steps = take 6 $ iterate update' $ runEnvironment initial
+  mapM_ display' steps
+  let final = runRobots $ last steps
+  displayScoreboard players final

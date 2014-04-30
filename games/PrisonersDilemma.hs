@@ -44,5 +44,8 @@ mintWorld l r = runCreation $ fillGrid (2, 1) [leftCell, rightCell] where
   leftCell = Square [leftRobot l] []
   rightCell = Square [rightRobot r] []
 
-display :: EventGrid -> IO ()
-display = displayEventGrid players
+run :: Memory -> Memory -> IO ()
+run l r = do
+  let result = runRobots $ mintWorld l r
+  displayBotworld players result
+  displayScoreboard players result
