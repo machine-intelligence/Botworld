@@ -14,6 +14,7 @@ WORKB	1024:	; Workspace b
 NIL:		Nil			; Always contains nil
 INSPECT:	Inspect 1		; Used to inspect a robot that just entered
 DROP:		Drop 0			; Used to drop the valuable box
+LIFT:		Lift 1			; Used to lift the robot's dropped box
 PASS:		Pass			; Used to pass when other robots are boring
 CRUN_R6:	CopyIfNil 2 6 0		; A conditional run of the precommit program (at the beginning of a new turn)
 RUN_R5:		CopyIfNil 3 5 0		; An unconditional run of the precommit loader
@@ -113,10 +114,10 @@ ONE_R3:		DEST		INP	WORKA	INP	; Discard program input register
 							; self-reflection that Omega desires.
 ONE_R4:		DEST		INP	WORKA	INP	; Load R4 into WorkA
 		DEST		WORKA	WORKB	WORKA	; Discard R4 limit information
-		CONS		WORKA	INSPECT	ARG	; Set ARG to (R4, INSPECT)
-		COPY		ONE_R5	YES		; Run ONE_R5 if R4 is INSPECT
+		CONS		WORKA	DROP	ARG	; Set ARG to (R4, DROP)
+		COPY		ONE_R5	YES		; Run ONE_R5 if R4 is DROP
 		COPY		RESET	NO		; Run RESET Otherwise
-		EXEC		EQ			; Check that R4 is INSPECT
+		EXEC		EQ			; Check that R4 is DROP
 
 							; Now we are confident that the program will immediately run R5 or R6.
 							; Let's make sure that those are appropriate spinners or precommitters.
@@ -220,8 +221,16 @@ ONE_YES:	WRITE		DROP			; This is what we wanted. Drop our box.
 SPIN_2:		CONDEXEC	OUT	TWO		; Run TWO if a new turn has begun.
 		EXEC		SPIN_2			; Otherwise, run SPIN_2
 
-TWO:		WRITE		PASS			; Pass.
-		EXEC		SPIN_2			; Forever.
+TWO:		WRITE		LIFT			; Lift Rob's box.
+		EXEC		SPIN_3			; Go to state 3.
+
+;; STATE 3 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+							; Waits for a new turn then enters state 2.
+SPIN_3:		CONDEXEC	OUT	THREE		; Run THREE if a new turn has begun.
+		EXEC		SPIN_3			; Otherwise, run SPIN_3
+
+THREE:		WRITE		PASS			; Pass.
+		EXEC		SPIN_3			; Forever.
 
 ;; FUNCTIONS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

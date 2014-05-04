@@ -13,7 +13,7 @@ OUT 64:		Move E				; Initial action: move east
 ;; VERIFIED REGISTERS ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 NIL:		Nil				; Always Nil. (Omega verifies that this is Nil.)
-COM:		Inspect 1			; Precommitted action. (Omega verifies that this.)
+COM:		Drop 0				; Precommitted action. (Omega verifies that this.)
 
 LPRECOM:	CONDEXEC	OUT	PRECOM	; Run 'PRECOM' if a new turn has begun.
 		EXEC		LPRECOM		; Run the 'PRECOM' loader.

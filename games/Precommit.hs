@@ -30,7 +30,7 @@ worthless :: Item
 worthless = Cargo 1 5
 
 valuable :: Item
-valuable = Cargo 99 5
+valuable = Cargo 100 5
 
 rex :: Memory -> Robot
 rex = Robot (F Red 10) [worthless] cpu
