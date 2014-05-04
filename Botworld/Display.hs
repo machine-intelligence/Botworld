@@ -84,7 +84,8 @@ actionSummary a = case a of
   where ilist is = unwords $ printf "%2d" <$> is
 
 itemDetail :: Item -> TextBlock
-itemDetail Shield = ["\\†/"]
+itemDetail DestroyShield = ["[†]"]
+itemDetail InspectShield = ["[°]"]
 itemDetail (FramePart f) = [printf "[%c]" $ colorChar $ color f, show $ strength f]
 itemDetail (ProcessorPart p) = ["[#]", show $ speed p]
 itemDetail (RegisterPart r) = ["[|]", show $ limit r]

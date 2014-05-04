@@ -36,7 +36,8 @@ rex :: Memory -> Robot
 rex = Robot (F Red 10) [worthless] cpu
 
 omega :: Robot
-omega = Robot (F Black 10) [valuable, Shield, Shield] (P 4096) Omega.machine
+omega = Robot (F Black 10) inventory (P 4096) Omega.machine where
+  inventory = [valuable, DestroyShield, DestroyShield]
 
 mintWorld :: Memory -> Botworld
 mintWorld mem = Grid (2, 1)

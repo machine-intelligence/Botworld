@@ -12,7 +12,7 @@ hare :: Robot
 hare = Robot (F White 1) [Cargo 1 1] (P 0) []
 
 stag :: Robot
-stag = Robot (F Yellow 1) [Cargo 2 1, Shield] (P 0) []
+stag = Robot (F Yellow 1) [Cargo 2 1, DisplayShield] (P 0) []
 
 robot :: Color -> Memory -> Robot
 robot c = Robot (F c 1) [] cpu

@@ -190,7 +190,8 @@ data Item
   | ProcessorPart Processor
   | RegisterPart Register
   | FramePart Frame
-  | Shield
+  | InspectShield
+  | DestroyShield
   deriving (Eq, Show)
 \end{code}
 
@@ -199,10 +200,8 @@ Every item has a weight. Shields, registers and processors are light. Frames are
 \begin{code}
 weight :: Item -> Int
 weight (Cargo _ w) = w
-weight Shield = 1
-weight (RegisterPart _) = 1
-weight (ProcessorPart _) = 1
 weight (FramePart _) = 100
+weight _ = 1
 \end{code}
 
 Robots can construct other robots from component parts. Specifically, a robot may be constructed from one frame, one processor, and any number of registers.\footnote{The following code introduces the helper function |singleton :: [a] -> Maybe a| which returns |Just x| when given |[x]| and |Nothing| otherwise, as well as the helper functions |isFrame, isProcessor, isPart :: Item -> Bool|, all of which are defined in Appendix~\ref{app:helpers}.}
@@ -370,26 +369,32 @@ We may then determine which items are in high demand, and generate our item list
 
 \paragraph{Robots may only be destroyed or inspected if they do not possess adequate shields.} Every attack (|Destroy| or |Inspect| command) targeting a robot destroys one of the robot's shields. So long as the robot possesses more shields than attackers, the robot is not affected. However, if the robot is attacked by more robots than it has shields, then all of its shields are destroyed \emph{and} all of the attacks succeed (in a wild frenzy, presumably).
 
-To implement this behavior, we generate first a list corresponding by index to the robot list which specifies the number of attacks that each robot receives in this step:
+To implement this behavior, we generate first a list corresponding by index to the robot list which specifies the number of destroy or inspect attempts that each robot receives in this step:
 
 \restorecolumns
 \begin{code}
-  attacks :: [Int]
-  attacks = numAttacks <$> [0..pred $ length $ robotsIn sq] where
-    numAttacks i = length $ filter (== i) allAttacks
-    allAttacks = mapMaybe (getAttack =<<) intents
-    getAttack (Inspect i) = Just i
-    getAttack (Destroy i) = Just i
-    getAttack _ = Nothing
+  destroyAttempts :: [Int]
+  destroyAttempts = numAttempts <$> [0..pred $ length $ robotsIn sq] where
+    numAttempts i = length [n | Just (Destroy n) <- intents, n == i]
+
+  inspectAttempts :: [Int]
+  inspectAttempts = numAttempts <$> [0..pred $ length $ robotsIn sq] where
+    numAttempts i = length [n | Just (Inspect n) <- intents, n == i]
 \end{code}
 
-We then generate a list corresponding by index to the robot list which for each robot determines whether that robot is adequately shielded in this step\footnote{This function introduces the helper function |isShield :: Item -> Bool| defined in Appendix~\ref{app:helpers}.}:
+We then generate a list corresponding by index to the robot list which for each robot determines whether that robot is adequately shielded (againts various attacks) in this step\footnote{This function introduces the helper functions |isInspectShield, isDestroyShield :: Item -> Bool| defined in Appendix~\ref{app:helpers}.}:
 
 \restorecolumns
 \begin{code}
-  shielded :: [Bool]
-  shielded = zipWith isShielded [0..] robots where
-    isShielded i r = (attacks !! i) <= length (filter isShield $ inventory r)
+  inspectShielded :: [Bool]
+  inspectShielded = zipWith isShielded [0..] robots where
+    isShielded i r = (inspectAttempts !! i) <= numInspectShields r
+    numInspectShields = length . filter isInspectShield . inventory
+
+  destroyShielded :: [Bool]
+  destroyShielded = zipWith isShielded [0..] robots where
+    isShielded i r = (destroyAttempts !! i) <= numDestroyShields r
+    numDestroyShields = length . filter isDestroyShield . inventory
 \end{code}
 
 \paragraph{Any robot that exits the square in this step cannot be attacked in this step.} Moving robots evade their pursuers, and the shields of moving robots are not destroyed. We define a function that determines whether a robot has successfully fled. This function makes use of the fact that movement commands into non-wall cells always succeed.
@@ -461,7 +466,7 @@ Otherwise, the inspection succeeds.
     act (Inspect i) = maybe Invalid tryInspect (robots !!? i) where
       tryInspect target
         | fled (intents !! i) = InspectTargetFled i
-        | shielded !! i = InspectBlocked i
+        | inspectShielded !! i = InspectBlocked i
         | otherwise = Inspected i target
 \end{code}
 
@@ -474,7 +479,7 @@ Robots \emph{can} destroy themselves. Programs should be careful to avoid uninte
     act (Destroy i) = maybe Invalid tryDestroy (robots !!? i) where
       tryDestroy _
         | fled (intents !! i) = DestroyTargetFled i
-        | shielded !! i = DestroyBlocked i
+        | destroyShielded !! i = DestroyBlocked i
         | otherwise = Destroyed i
 \end{code}
 
@@ -540,7 +545,10 @@ Robot inventories are updated whenever the robot executes a |Lift| action, execu
     Lifted n -> r{inventory=(itemsIn sq !! n) : defend stale}
     Dropped n -> r{inventory=defend $ removeIndices [n] stale}
     _ -> r{inventory=defend stale}
-    where defend = dropN (attacks !! i) isShield
+    where
+      defend = breakDestroyShields . breakInspectShields
+      breakDestroyShields = dropN (destroyAttempts !! i) isDestroyShield
+      breakInspectShields = dropN (inspectAttempts !! i) isInspectShield
 \end{code}
 
 We use this function to update the inventories of all robots that were originally in this square. Notice that the inventories of destroyed robots are updated as well: destroyed robots get to perform their actions before they are destroyed.
@@ -1165,7 +1173,8 @@ instance Encodable Item where
   encode (RegisterPart r)   = encode (1 :: Int, r)
   encode (ProcessorPart p)  = encode (2 :: Int, p)
   encode (FramePart f)      = encode (3 :: Int, f)
-  encode Shield             = encode (4 :: Int, Nil)
+  encode DestroyShield      = encode (4 :: Int, Nil)
+  encode InspectShield      = encode (5 :: Int, Nil)
 
 instance Decodable Item where
   decode t = case decode t :: Maybe (Int, Constree) of
@@ -1173,7 +1182,8 @@ instance Decodable Item where
     Just (1, args)  -> RegisterPart <$> decode args
     Just (2, args)  -> ProcessorPart <$> decode args
     Just (3, args)  -> FramePart <$> decode args
-    Just (4, Nil)   -> Just Shield
+    Just (4, Nil)   -> Just DestroyShield
+    Just (5, Nil)   -> Just InspectShield
     _               -> Nothing
 
 instance Encodable Direction where
@@ -1262,9 +1272,13 @@ isFrame :: Item -> Bool
 isFrame (FramePart _) = True
 isFrame _ = False
 
-isShield :: Item -> Bool
-isShield Shield = True
-isShield _ = False
+isInspectShield :: Item -> Bool
+isInspectShield InspectShield = True
+isInspectShield _ = False
+
+isDestroyShield :: Item -> Bool
+isDestroyShield DestroyShield = True
+isDestroyShield _ = False
 
 isExit :: Action -> Bool
 isExit (MovedOut _) = True
