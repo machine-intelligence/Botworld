@@ -9,6 +9,7 @@ import Text.Printf (printf)
 
 -- Processor you get to use.
 
+-- NOTE: This value should be increased if you plan to implement an AIXI.
 cpu :: Processor
 cpu = P 8192
 
@@ -32,16 +33,16 @@ worthless = Cargo 1 5
 valuable :: Item
 valuable = Cargo 100 5
 
-rex :: Memory -> Robot
-rex = Robot (F Red 10) [worthless] cpu
+rob :: Memory -> Robot
+rob = Robot (F Red 10) [worthless] cpu
 
 omega :: Robot
 omega = Robot (F Black 10) inventory (P 4096) Omega.machine where
-  inventory = [valuable, DestroyShield, DestroyShield]
+  inventory = valuable : replicate 5 DestroyShield
 
 mintWorld :: Memory -> Botworld
 mintWorld mem = Grid (2, 1)
-  [ Just (Square [rex mem] [])
+  [ Just (Square [rob mem] [])
   , Just (Square [omega] [])
   ]
 
@@ -49,7 +50,7 @@ mintWorld mem = Grid (2, 1)
 game :: Memory -> [Botworld]
 game = take 6 . iterate update . mintWorld
 
--- Extracts the final state of Rex's memory (if Rex survives).
+-- Extracts the final state of rob's memory (if rob survives).
 extract :: Botworld -> Memory
 extract (Grid _ cs) = get $ filter isRed allRobots where
   allRobots = concatMap robotsIn $ catMaybes cs
